@@ -75,14 +75,14 @@ class IDXMomentumIndicator:
         """
         PATTERN BULLISH ACCUMULATION:
         
-        1. OFFER TEBAL + freq jual TEBAL (offer heavy with frequent placements)
-        2. BID TIPIS + freq beli TIPIS (bid light but PERSISTENT - tidak dicabut)
-        3. Ada HAKA volume BESAR (buyers aggressive attacking offer)
-        4. Net Money Flow POSITIF (2-3 hari accumulation)
+        1. OFFER TIPIS + freq jual TIPIS (sellers losing conviction, leaving market)
+        2. BID TEBAL + freq beli TEBAL (ready to dump, high buying intent)
+        3. RED FLAG SPECIAL: bid_volume > offer_volume AND bid_freq > offer_freq
+           → Heavy buyers tapi TERUS-TERUS update bid → Accumulation ongoing
+        4. HAKA volume tinggi (buyers aggressive buying)
+        5. Net Money Flow POSITIF (2-3 hari accumulation)
         
-        INTERPRETATION: Buyers gradually accumulating against heavy seller resistance.
-        Offer tebal = sellers nolak naik keras
-        Tapi bid persistent = buyers sabar accumulate
+        INTERPRETATION: Buyers strongly accumulating against weak offer resistance.
         Eventual outcome: Supply habis → harga BREAK NAIK
         
         Args:
@@ -106,38 +106,45 @@ class IDXMomentumIndicator:
         offer_freq_total = sum(offer_freqs[:5]) if offer_freqs else 0
         bid_freq_total = sum(bid_freqs[:5]) if bid_freqs else 0
         
-        # Component 1: Offer tebal + freq jual tebal (strong seller resistance)
+        # Component 1: Offer tebal + freq jual tebal (sellers resisting)
         if offer_total > 0 and bid_total > 0:
             volume_ratio = offer_total / bid_total
             
-            if volume_ratio > 1.5:  # Offer tebal
-                confidence_score += 15
+            if volume_ratio > 1.3:  # Offer tebal
+                confidence_score += 20
                 details['offer_volume'] = f'TEBAL ({volume_ratio:.2f}x) ✓'
         
         if offer_freq_total > 0 and bid_freq_total > 0:
             freq_ratio = offer_freq_total / bid_freq_total
             
-            if freq_ratio > 1.2:  # Sellers frequent update
+            if freq_ratio > 1.2:  # Freq jual tebal
                 confidence_score += 15
                 details['offer_frequency'] = f'TEBAL ({freq_ratio:.2f}x) ✓'
         
-        # Component 2: Bid tipis TAPI persistent (tidak dicabut/hilang)
-        if bid_total > 0 and bid_total < offer_total:  # Bid tipis
-            # Check persistence: bid freq consistent (tidak sudden drop to 0)
-            if bid_freq_total > 20:  # Bid keep updating (persistent)
-                confidence_score += 20
-                details['bid_persistence'] = f'PERSISTENT (freq: {bid_freq_total}) ✓'
+        # Component 2: Bid tipis + freq beli tipis (buyers patient/accumulating)
+        if bid_total < offer_total * 0.8:  # Bid tipis
+            confidence_score += 20
+            details['bid_volume'] = f'TIPIS vs offer ✓'
         
-        # Component 3: Aggressive HAKA activity (buyers attacking offer)
+        if bid_freq_total < offer_freq_total * 0.85:  # Freq beli tipis
+            confidence_score += 20
+            details['bid_frequency'] = f'TIPIS vs offer ✓'
+        
+        # Component 3: RED FLAG - offer > bid AND offer freq > bid freq
+        if offer_total > bid_total and offer_freq_total > bid_freq_total:
+            confidence_score += 25  # STRONG BULLISH FLAG
+            details['RED_FLAG'] = 'offer>bid AND offer_freq>bid_freq ✓✓✓'
+        
+        # Component 4: High HAKA activity (buyers aggressive)
         if haka_volume_recent > self.thresholds['large_volume']:
-            confidence_score += 25
-            details['haka_activity'] = f'LARGE ({haka_volume_recent:,.0f}) ✓'
+            confidence_score += 15
+            details['haka_activity'] = f'HIGH ({haka_volume_recent:,.0f}) ✓'
         
-        # Component 4: Multi-day positive flow
+        # Component 5: Multi-day positive flow
         if net_flow_3days and len(net_flow_3days) >= 2:
             positive_days = sum(1 for flow in net_flow_3days if flow > 0)
             if positive_days >= self.thresholds['min_multi_day']:
-                confidence_score += 25
+                confidence_score += 5
                 details['multi_day_flow'] = f'POSITIVE ({positive_days}/{len(net_flow_3days)} days) ✓'
         
         return {
@@ -145,7 +152,7 @@ class IDXMomentumIndicator:
             'confidence': min(confidence_score, 100),
             'details': details,
             'action': self._get_action_bullish(confidence_score),
-            'description': 'Buyers accumulating against heavy seller resistance'
+            'description': 'Buyers strong accumulation - breakup incoming'
         }
     
     # ===== PATTERN 2: BEARISH DISTRIBUTION/RED FLAG =====
@@ -155,29 +162,34 @@ class IDXMomentumIndicator:
                                    bid_freqs: List[int],
                                    offer_vols: List[float], 
                                    offer_freqs: List[int],
-                                   haki_volume_recent: float) -> Dict:
+                                   haki_volume_recent: float,
+                                   haka_volume_recent: float = None,
+                                   net_flow_3days: List[float] = None) -> Dict:
         """
         PATTERN BEARISH DISTRIBUTION = IMMINENT GUYURAN!
         
         NOTE: Trend/price momentum is NOT a requirement anymore!
         Pattern can be detected at any price level based on PURE ORDER BOOK microstructure
         
-        Key Signals:
-        1. OFFER TIPIS + freq jual TIPIS (sellers losing conviction, leaving market)
-        2. BID TEBAL + freq beli TEBAL (ready to dump, high selling intent)
-        3. RED FLAG SPECIAL: bid_volume < offer_volume BUT bid_freq > offer_freq
-           → Few buyers tapi TERUS-TERUS update bid → Potential dump incoming
-        4. HAKI volume tinggi (sellers aggressive taking bids)
+        Key Signals (ADJUSTED LOGIC):
+        1. bid vol per tick < offer vol per tick (at least 3-4 out of top 5 levels)
+        2. bid vol sum * 1.75 < offer vol sum (top 10 summed)
+        3. bid freq per tick < offer freq per tick (at least 3-4 out of top 5 levels)
+        4. bid freq sum * 1.75 < offer freq sum (top 10 summed)
+        5. HAKI > HAKA (sellers more aggressive than buyers)
+        6. Negative net flow 3-day trend (sellers accumulating, distribution phase)
         
-        Result: IMMEDIATE DUMP INCOMING (regardless of trend)
+        Result: STRONG BEARISH SIGNAL (sellers dominating)
         
         Args:
-            price_momentum: Price momentum indicator (not used as requirement anymore)
-            bid_vols: List of bid volumes (top 5 levels)
-            bid_freqs: List of bid frequencies (top 5 levels)
-            offer_vols: List of offer volumes (top 5 levels)
-            offer_freqs: List of offer frequencies (top 5 levels)
+            price_momentum: Price momentum indicator (not used as requirement)
+            bid_vols: List of bid volumes (top 10 levels)
+            bid_freqs: List of bid frequencies (top 10 levels)
+            offer_vols: List of offer volumes (top 10 levels)
+            offer_freqs: List of offer frequencies (top 10 levels)
             haki_volume_recent: Recent aggressive sell volume
+            haka_volume_recent: Recent aggressive buy volume
+            net_flow_3days: Net flow for past 3 days
         
         Returns:
             Dict with pattern, confidence score, details, and action
@@ -186,52 +198,67 @@ class IDXMomentumIndicator:
         confidence_score = 0
         details = {}
         
-        # Calculate totals
-        offer_total = sum(offer_vols[:5]) if offer_vols else 0
-        bid_total = sum(bid_vols[:5]) if bid_vols else 0
-        offer_freq_total = sum(offer_freqs[:5]) if offer_freqs else 0
-        bid_freq_total = sum(bid_freqs[:5]) if bid_freqs else 0
+        # Calculate totals (using top 10 levels for summed checks)
+        offer_total = sum(offer_vols[:10]) if offer_vols else 0
+        bid_total = sum(bid_vols[:10]) if bid_vols else 0
+        offer_freq_total = sum(offer_freqs[:10]) if offer_freqs else 0
+        bid_freq_total = sum(bid_freqs[:10]) if bid_freqs else 0
         
-        # Component 1: Offer tipis + freq jual tipis (sellers leaving)
-        if offer_total > 0 and bid_total > 0:
-            volume_ratio = offer_total / bid_total
-            
-            if volume_ratio < 0.7:  # Offer tipis
-                confidence_score += 20
-                details['offer_volume'] = f'TIPIS ({volume_ratio:.2f}x) ✓'
+        # Component 1: Check bid vol per tick > offer vol per tick (at least 3-4 out of top 5)
+        bid_vol_stronger_count = sum(
+            1 for i in range(min(5, len(bid_vols), len(offer_vols)))
+            if bid_vols[i] > offer_vols[i]
+        )
         
-        if offer_freq_total > 0 and bid_freq_total > 0:
-            freq_ratio = offer_freq_total / bid_freq_total
-            
-            if freq_ratio < 0.8:  # Freq jual turun
+        if bid_vol_stronger_count >= 3:  # At least 3 out of 5
+            confidence_score += 20
+            details['bid_vol_per_tick'] = f'TOP 5: {bid_vol_stronger_count}/5 levels bid > offer ✓'
+        
+        # Component 2: Check bid vol sum * 1.75 > offer vol sum (TOP 10 SUMMED)
+        if bid_total > 0 and offer_total > 0:
+            if bid_total * 1.75 > offer_total:
+                confidence_score += 25
+                details['bid_vol_strength'] = f'bid*1.75 > offer (ratio: {bid_total/offer_total:.2f}x) ✓'
+        
+        # Component 3: Check bid freq per tick > offer freq per tick (at least 3-4 out of top 5)
+        bid_freq_stronger_count = sum(
+            1 for i in range(min(5, len(bid_freqs), len(offer_freqs)))
+            if bid_freqs[i] > offer_freqs[i]
+        )
+        
+        if bid_freq_stronger_count >= 3:  # At least 3 out of 5
+            confidence_score += 20
+            details['bid_freq_per_tick'] = f'TOP 5: {bid_freq_stronger_count}/5 levels bid_freq > offer_freq ✓'
+        
+        # Component 4: Check bid freq sum * 1.75 > offer freq sum (TOP 10 SUMMED)
+        if bid_freq_total > 0 and offer_freq_total > 0:
+            if bid_freq_total * 1.75 > offer_freq_total:
+                confidence_score += 25
+                details['bid_freq_strength'] = f'bid_freq*1.75 > offer_freq (ratio: {bid_freq_total/offer_freq_total:.2f}x) ✓'
+        
+        # Component 5: HAKA > HAKI (buyers more aggressive than sellers in bearish - dump incoming)
+        if haka_volume_recent and haki_volume_recent:
+            if haka_volume_recent > haki_volume_recent:
+                haka_ratio = haka_volume_recent / haki_volume_recent if haki_volume_recent > 0 else 0
                 confidence_score += 15
-                details['offer_frequency'] = f'TURUN ({freq_ratio:.2f}x) ✓'
+                details['haka_dominance'] = f'HAKA > HAKI ({haka_ratio:.2f}x) ✓'
+        elif haka_volume_recent and haka_volume_recent > self.thresholds['large_volume']:
+            confidence_score += 10
+            details['haka_activity'] = f'HIGH ({haka_volume_recent:,.0f}) ✓'
         
-        # Component 2: Bid tebal + freq beli tebal (ready to dump)
-        if bid_total > offer_total * 1.2:  # Bid tebal
-            confidence_score += 20
-            details['bid_volume'] = f'TEBAL vs offer ✓'
-        
-        if bid_freq_total > offer_freq_total * 1.2:  # Freq beli naik
-            confidence_score += 20
-            details['bid_frequency'] = f'TEBAL vs offer ✓'
-        
-        # Component 3: RED FLAG - bid < offer BUT bid freq > offer freq
-        if bid_total < offer_total and bid_freq_total > offer_freq_total:
-            confidence_score += 25  # EXTREME RED FLAG
-            details['RED_FLAG'] = 'bid<offer BUT bid_freq>offer_freq ⚠️⚠️⚠️'
-        
-        # Component 4: High HAKI activity (sellers aggressive)
-        if haki_volume_recent > self.thresholds['large_volume']:
-            confidence_score += 20
-            details['haki_activity'] = f'HIGH ({haki_volume_recent:,.0f}) ✓'
+        # Component 6: Negative net flow (3-day trend shows selling pressure)
+        if net_flow_3days and len(net_flow_3days) >= 2:
+            negative_days = sum(1 for flow in net_flow_3days if flow < 0)
+            if negative_days >= 2:  # At least 2 days negative
+                confidence_score += 15
+                details['net_flow'] = f'NEGATIVE ({negative_days}/{len(net_flow_3days)} days) ✓'
         
         return {
             'pattern': 'BEARISH_DISTRIBUTION',
             'confidence': min(confidence_score, 100),
             'details': details,
             'action': self._get_action_bearish(confidence_score),
-            'description': 'Sellers distributing - reversal imminent'
+            'description': 'Sellers dominating - strong bearish pressure detected'
         }
     
     # ===== UTILITY: Frequency analysis =====
