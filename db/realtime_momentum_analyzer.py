@@ -71,7 +71,7 @@ class RealTimeAnalyzer:
         }
     
     def analyze(self, symbol: str) -> None:
-        """Fetch order book and perform momentum analysis"""
+        """Fetch order book and perform sentiment analysis using 6-rule system"""
         print(f"\n{'='*80}")
         print(f"REAL-TIME IDX MOMENTUM ANALYSIS - {symbol}")
         print(f"{'='*80}")
@@ -92,57 +92,39 @@ class RealTimeAnalyzer:
         print(f"   Volume: {ob_data['volume']:,} lots")
         print(f"   Foreign Net: IDR {ob_data['fnet']:,.0f}")
         
-        # Calculate estimated net flow (simplified 3-day as recent vs historical)
-        net_flow_3days = [ob_data['fnet'] / 1e9, ob_data['fnet'] / 1e9 * 0.8, ob_data['fnet'] / 1e9 * 0.6]
-        
-        # Analyze bullish accumulation
-        bullish_result = self.indicator.detect_bullish_accumulation(
-            bid_vols=ob_data['bid_volumes'],
+        # Perform trading sentiment analysis using 6-rule system
+        sentiment_result = self.indicator.analyze_sentiment(
+            bid_prices=ob_data['bid_prices'],
+            bid_volumes=ob_data['bid_volumes'],
             bid_freqs=ob_data['bid_freqs'],
-            offer_vols=ob_data['ask_volumes'],
-            offer_freqs=ob_data['ask_freqs'],
-            haka_volume_recent=ob_data['haka_volume'],
-            net_flow_3days=net_flow_3days
-        )
-        
-        # Analyze bearish distribution
-        price_momentum = min(1.0, abs(ob_data['fnet']) / 1e12)  # Normalize
-        bearish_result = self.indicator.detect_bearish_distribution(
-            price_momentum=price_momentum,
-            bid_vols=ob_data['bid_volumes'],
-            bid_freqs=ob_data['bid_freqs'],
-            offer_vols=ob_data['ask_volumes'],
-            offer_freqs=ob_data['ask_freqs'],
-            haki_volume_recent=ob_data['haki_volume']
+            offer_prices=ob_data['ask_prices'],
+            offer_volumes=ob_data['ask_volumes'],
+            offer_freqs=ob_data['ask_freqs']
         )
         
         # Display results
-        print(f"\n🎯 PATTERN ANALYSIS:")
-        print(f"\n   BULLISH ACCUMULATION:")
-        print(f"      Confidence: {bullish_result['confidence']}/100")
-        print(f"      Action: {bullish_result['action']}")
-        for key, val in bullish_result['details'].items():
-            print(f"      ✓ {key}: {val}")
+        print(f"\n🎯 TRADING SENTIMENT ANALYSIS (6-RULE SYSTEM):")
+        print(f"\n   Signal: {sentiment_result['summary']['signal']}")
+        print(f"   Confidence: {sentiment_result['confidence']}/{sentiment_result['summary']['max_points']}")
+        print(f"\n   Rules Breakdown:")
         
-        print(f"\n   BEARISH DISTRIBUTION:")
-        print(f"      Confidence: {bearish_result['confidence']}/100")
-        print(f"      Action: {bearish_result['action']}")
-        if bearish_result['confidence'] > 0:
-            for key, val in bearish_result['details'].items():
-                print(f"      {key}: {val}")
-        else:
-            print(f"      (No bearish signals detected)")
+        for rule_key, rule_data in sentiment_result['rules'].items():
+            status = "✓ PASS" if rule_data['passed'] else "✗ FAIL"
+            print(f"      {rule_key}: {rule_data['name']}")
+            print(f"         {status} | {rule_data['points']} points | {rule_data['values']['calculation']}")
         
         # Overall signal
         print(f"\n{'='*80}")
-        if bullish_result['confidence'] > 75:
-            print(f"🟢 STRONG BULLISH SIGNAL - Consider entry")
-        elif bullish_result['confidence'] > 60:
-            print(f"🟡 MODERATE BULLISH - Watch for confirmation")
-        elif bearish_result['confidence'] > 75:
-            print(f"🔴 STRONG BEARISH SIGNAL - Exercise caution")
+        if sentiment_result['sentiment'] == 'BULLISH':
+            if sentiment_result['confidence'] >= 90:
+                print(f"🚀 VERY STRONG BULLISH SIGNAL - Consider aggressive entry")
+            else:
+                print(f"🟢 BULLISH SIGNAL - Consider entry")
         else:
-            print(f"⚫ NEUTRAL - Await clearer signals")
+            if sentiment_result['confidence'] >= 70:
+                print(f"🔴 VERY STRONG BEARISH SIGNAL - Exercise extreme caution")
+            else:
+                print(f"⚫ BEARISH - Await better opportunities")
         
         print(f"{'='*80}\n")
 

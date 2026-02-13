@@ -1,13 +1,9 @@
 """
-IDX Momentum Indicator - Custom Indicator for Indonesian Stock Market Scalping
-Based on Order Flow Analysis + Broker Action + Multi-day Accumulation
+IDX Momentum Indicator - Trading Sentiment Analysis (6-Rule System)
+Indonesian Stock Market Scalping Strategy
 
-Key Patterns:
-1. BULLISH ACCUMULATION: Offer tebal + freq jual tebal vs Bid tipis persistent + freq beli tipis
-   → Buyers accumulating against resistance → Supply habis → BREAK NAIK
-   
-2. BEARISH DISTRIBUTION: Harga naik + Offer tipis + Bid tebal + Freq shift (offer down, bid up)
-   → Imminent reversal → GUYURAN (dump)
+LOGIC: 6 Rules totaling 100 points
+Target: confidence ≥ 80 points = BULLISH, else BEARISH
 
 Author: Research & Development
 Date: February 2026
@@ -47,248 +43,564 @@ class BrokerAction:
 
 class IDXMomentumIndicator:
     """
-    Corrected indicator based on actual IDX market microstructure
+    Trading Sentiment Analysis Indicator (6-Rule System)
     
-    KEY INSIGHT: Frekuensi update order (bid freq vs offer freq) adalah 
-    indikator conviction lebih penting daripada sekedar volume!
+    Target: confidence ≥ 80 points = BULLISH, else BEARISH
+    Total maksimal points: 100 points
+    
+    Rules:
+    1. Top 10 Summed Bid Volume vs Offer Volume (15 points)
+    2. Top Bid Volume vs Top Offer Volume (20 points)
+    3. Distribusi Offer Volume - Kerapian Tick (30 points)
+    4. Top 10 Summed Bid Freq vs Offer Freq (15 points)
+    5. All Bid Volume vs All Offer Volume (10 points)
+    6. All Bid Freq vs All Offer Freq (10 points)
     """
     
     def __init__(self, thresholds: Optional[Dict] = None):
         """Initialize indicator with configurable thresholds"""
         self.thresholds = thresholds or {
-            'large_volume': 50000,  # Large HAKA/HAKI volume threshold
-            'accumulation_confidence': 75,
-            'distribution_confidence': 80,
-            'min_multi_day': 2,  # Minimum positive days for accumulation
+            'bullish_threshold': 80,  # Confidence needed for BULLISH signal
+            'bearish_threshold': 20,  # Confidence needed for BEARISH signal (sellers dominate)
         }
         self.price_history = []
         self.broker_history = []
     
-    # ===== PATTERN 1: BULLISH ACCUMULATION =====
-    def detect_bullish_accumulation(self, 
-                                   bid_vols: List[float], 
-                                   bid_freqs: List[int],
-                                   offer_vols: List[float], 
-                                   offer_freqs: List[int],
-                                   haka_volume_recent: float,
-                                   net_flow_3days: List[float]) -> Dict:
+    # ===== TRADING SENTIMENT ANALYSIS - 6 RULE SYSTEM =====
+    def analyze_sentiment(self,
+                         bid_prices: List[float],
+                         bid_volumes: List[float],
+                         bid_freqs: List[int],
+                         offer_prices: List[float],
+                         offer_volumes: List[float],
+                         offer_freqs: List[int]) -> Dict:
         """
-        PATTERN BULLISH ACCUMULATION:
+        Trading Sentiment Analysis using 6 rules - Dual Direction
         
-        1. OFFER TIPIS + freq jual TIPIS (sellers losing conviction, leaving market)
-        2. BID TEBAL + freq beli TEBAL (ready to dump, high buying intent)
-        3. RED FLAG SPECIAL: bid_volume > offer_volume AND bid_freq > offer_freq
-           → Heavy buyers tapi TERUS-TERUS update bid → Accumulation ongoing
-        4. HAKA volume tinggi (buyers aggressive buying)
-        5. Net Money Flow POSITIF (2-3 hari accumulation)
+        This method calculates TWO scores:
+        1. BULLISH SCORE: How much sellers are dominating (0-100)
+           - Bullish if score >= 80
+        2. BEARISH SCORE: How much buyers are dominating (0-100)
+           - Bearish if score >= 80
         
-        INTERPRETATION: Buyers strongly accumulating against weak offer resistance.
-        Eventual outcome: Supply habis → harga BREAK NAIK
+        Sentiment Categories:
+        - BULLISH: Bullish score >= 80 (sellers weak, buyers dominating)
+        - BEARISH: Bearish score >= 80 (buyers weak, sellers dominating)
+        - NEUTRAL: Both scores < 80 (balanced market)
         
         Args:
-            bid_vols: List of bid volumes (top 5 levels)
-            bid_freqs: List of bid frequencies (top 5 levels)
-            offer_vols: List of offer volumes (top 5 levels)
-            offer_freqs: List of offer frequencies (top 5 levels)
-            haka_volume_recent: Recent aggressive buy volume
-            net_flow_3days: Net money flow for past 3 days
+            bid_prices: List of bid prices (all levels)
+            bid_volumes: List of bid volumes (all levels)
+            bid_freqs: List of bid frequencies (all levels)
+            offer_prices: List of offer prices (all levels)
+            offer_volumes: List of offer volumes (all levels)
+            offer_freqs: List of offer frequencies (all levels)
         
         Returns:
-            Dict with pattern, confidence score, details, and action
+            Dict with confidence scores, sentiment, and rule details
         """
         
-        confidence_score = 0
-        details = {}
+        bullish_confidence = 0
+        bearish_confidence = 0
+        bullish_rules = {}
+        bearish_rules = {}
         
-        # Calculate totals
-        offer_total = sum(offer_vols[:5]) if offer_vols else 0
-        bid_total = sum(bid_vols[:5]) if bid_vols else 0
-        offer_freq_total = sum(offer_freqs[:5]) if offer_freqs else 0
-        bid_freq_total = sum(bid_freqs[:5]) if bid_freqs else 0
-        
-        # Component 1: Offer tebal + freq jual tebal (sellers resisting)
-        if offer_total > 0 and bid_total > 0:
-            volume_ratio = offer_total / bid_total
+        # ===== BULLISH RULES (Sellers dominating) =====
+        # RULE 1 BULLISH: Top 10 Summed Bid Volume vs Offer Volume (15 points)
+        # Bullish if: bid*2 < offer (strictly less than)
+        rule1_bullish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            sum_bid_vol_top10 = sum(bid_volumes[:10])
+            sum_offer_vol_top10 = sum(offer_volumes[:10])
             
-            if volume_ratio > 1.3:  # Offer tebal
-                confidence_score += 20
-                details['offer_volume'] = f'TEBAL ({volume_ratio:.2f}x) ✓'
-        
-        if offer_freq_total > 0 and bid_freq_total > 0:
-            freq_ratio = offer_freq_total / bid_freq_total
+            if (sum_bid_vol_top10 * 2) < sum_offer_vol_top10:
+                bullish_confidence += 15
+                rule1_bullish_passed = True
             
-            if freq_ratio > 1.2:  # Freq jual tebal
-                confidence_score += 15
-                details['offer_frequency'] = f'TEBAL ({freq_ratio:.2f}x) ✓'
+            bullish_rules['rule_1'] = {
+                'name': 'Top 10 Summed Bid Volume vs Offer Volume',
+                'passed': rule1_bullish_passed,
+                'points': 15 if rule1_bullish_passed else 0,
+                'condition': '(sum_bid_vol_top10 * 2) < sum_offer_vol_top10',
+                'interpretation': 'Sellers massive (offers weak buyers)',
+                'values': {
+                    'sum_bid_vol_top10': sum_bid_vol_top10,
+                    'sum_offer_vol_top10': sum_offer_vol_top10,
+                    'calculation': f'{sum_bid_vol_top10} * 2 = {sum_bid_vol_top10 * 2} < {sum_offer_vol_top10}? {rule1_bullish_passed}'
+                }
+            }
         
-        # Component 2: Bid tipis + freq beli tipis (buyers patient/accumulating)
-        if bid_total < offer_total * 0.8:  # Bid tipis
-            confidence_score += 20
-            details['bid_volume'] = f'TIPIS vs offer ✓'
+        # RULE 2 BULLISH: Top Bid Volume vs Top Offer Volume (20 points)
+        rule2_bullish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            top_bid_vol = bid_volumes[0]
+            top_offer_vol = offer_volumes[0]
+            
+            if (top_bid_vol * 1.8) < top_offer_vol:
+                bullish_confidence += 20
+                rule2_bullish_passed = True
+            
+            bullish_rules['rule_2'] = {
+                'name': 'Top Bid Volume vs Top Offer Volume',
+                'passed': rule2_bullish_passed,
+                'points': 20 if rule2_bullish_passed else 0,
+                'condition': '(top_bid_vol * 1.8) < top_offer_vol',
+                'interpretation': 'Top seller massive vs top buyer',
+                'values': {
+                    'top_bid_vol': top_bid_vol,
+                    'top_offer_vol': top_offer_vol,
+                    'calculation': f'{top_bid_vol} * 1.8 = {top_bid_vol * 1.8} < {top_offer_vol}? {rule2_bullish_passed}'
+                }
+            }
         
-        if bid_freq_total < offer_freq_total * 0.85:  # Freq beli tipis
-            confidence_score += 20
-            details['bid_frequency'] = f'TIPIS vs offer ✓'
+        # RULE 3 BULLISH: Distribusi Offer Volume - Kerapian Tick (30 points)
+        rule3_bullish_passed = False
+        if len(offer_volumes) >= 10:
+            top_offer = offer_volumes[0]
+            threshold = top_offer * 0.8
+            
+            # Exclude offers > threshold
+            remaining_offers = [v for v in offer_volumes[:10] if v <= threshold]
+            
+            if len(remaining_offers) > 0:
+                average = sum(remaining_offers) / len(remaining_offers)
+                count_above_avg = sum(1 for v in remaining_offers if v > average)
+                percentage_above_avg = count_above_avg / len(remaining_offers)
+                
+                if percentage_above_avg >= 0.75:
+                    bullish_confidence += 30
+                    rule3_bullish_passed = True
+                
+                bullish_rules['rule_3'] = {
+                    'name': 'Distribusi Offer Volume - Kerapian Tick',
+                    'passed': rule3_bullish_passed,
+                    'points': 30 if rule3_bullish_passed else 0,
+                    'condition': '(count_above_avg / count(remaining_offers)) >= 0.75',
+                    'interpretation': 'Seller supply consistent & strong',
+                    'values': {
+                        'top_offer': top_offer,
+                        'threshold_80_percent': threshold,
+                        'all_top_10_offers': offer_volumes[:10],
+                        'remaining_after_exclude': remaining_offers,
+                        'average': average,
+                        'count_above_avg': count_above_avg,
+                        'percentage_above_avg': percentage_above_avg,
+                        'calculation': f'{count_above_avg}/{len(remaining_offers)} = {percentage_above_avg:.2%} >= 75%? {rule3_bullish_passed}'
+                    }
+                }
+        elif len(offer_volumes) >= 5:
+            # Fallback for when we have less than 10 offers - use available data
+            top_offer = offer_volumes[0]
+            threshold = top_offer * 0.8
+            
+            # Exclude offers > threshold
+            remaining_offers = [v for v in offer_volumes if v <= threshold]
+            
+            if len(remaining_offers) > 0:
+                average = sum(remaining_offers) / len(remaining_offers)
+                count_above_avg = sum(1 for v in remaining_offers if v > average)
+                percentage_above_avg = count_above_avg / len(remaining_offers)
+                
+                if percentage_above_avg >= 0.75:
+                    bullish_confidence += 30
+                    rule3_bullish_passed = True
+                
+                bullish_rules['rule_3'] = {
+                    'name': 'Distribusi Offer Volume - Kerapian Tick',
+                    'passed': rule3_bullish_passed,
+                    'points': 30 if rule3_bullish_passed else 0,
+                    'condition': '(count_above_avg / count(remaining_offers)) >= 0.75',
+                    'interpretation': 'Seller supply consistent & strong',
+                    'values': {
+                        'top_offer': top_offer,
+                        'threshold_80_percent': threshold,
+                        'all_top_10_offers': offer_volumes[:10] if len(offer_volumes) >= 10 else offer_volumes,
+                        'remaining_after_exclude': remaining_offers,
+                        'average': average,
+                        'count_above_avg': count_above_avg,
+                        'percentage_above_avg': percentage_above_avg,
+                        'calculation': f'{count_above_avg}/{len(remaining_offers)} = {percentage_above_avg:.2%} >= 75%? {rule3_bullish_passed}'
+                    }
+                }
         
-        # Component 3: RED FLAG - offer > bid AND offer freq > bid freq
-        if offer_total > bid_total and offer_freq_total > bid_freq_total:
-            confidence_score += 25  # STRONG BULLISH FLAG
-            details['RED_FLAG'] = 'offer>bid AND offer_freq>bid_freq ✓✓✓'
+        # RULE 4 BULLISH: Top 10 Summed Bid Freq vs Offer Freq (15 points)
+        # Bullish if: bid*2 < offer (strictly less than)
+        rule4_bullish_passed = False
+        if len(bid_freqs) > 0 and len(offer_freqs) > 0:
+            sum_bid_freq_top10 = sum(bid_freqs[:10])
+            sum_offer_freq_top10 = sum(offer_freqs[:10])
+            
+            if (sum_bid_freq_top10 * 2) < sum_offer_freq_top10:
+                bullish_confidence += 15
+                rule4_bullish_passed = True
+            
+            bullish_rules['rule_4'] = {
+                'name': 'Top 10 Summed Bid Freq vs Offer Freq',
+                'passed': rule4_bullish_passed,
+                'points': 15 if rule4_bullish_passed else 0,
+                'condition': '(sum_bid_freq_top10 * 2) < sum_offer_freq_top10',
+                'interpretation': 'Sellers hitting multiple times',
+                'values': {
+                    'sum_bid_freq_top10': sum_bid_freq_top10,
+                    'sum_offer_freq_top10': sum_offer_freq_top10,
+                    'calculation': f'{sum_bid_freq_top10} * 2 = {sum_bid_freq_top10 * 2} < {sum_offer_freq_top10}? {rule4_bullish_passed}'
+                }
+            }
         
-        # Component 4: High HAKA activity (buyers aggressive)
-        if haka_volume_recent > self.thresholds['large_volume']:
-            confidence_score += 15
-            details['haka_activity'] = f'HIGH ({haka_volume_recent:,.0f}) ✓'
+        # RULE 5 BULLISH: All Bid Volume vs All Offer Volume (10 points)
+        # Bullish if: bid*2 < offer (strictly less than)
+        rule5_bullish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            all_bid_vol = sum(bid_volumes)
+            all_offer_vol = sum(offer_volumes)
+            
+            if (all_bid_vol * 2) < all_offer_vol:
+                bullish_confidence += 10
+                rule5_bullish_passed = True
+            
+            bullish_rules['rule_5'] = {
+                'name': 'All Bid Volume vs All Offer Volume',
+                'passed': rule5_bullish_passed,
+                'points': 10 if rule5_bullish_passed else 0,
+                'condition': '(all_bid_vol * 2) < all_offer_vol',
+                'interpretation': 'Total sellers >> total buyers',
+                'values': {
+                    'all_bid_vol': all_bid_vol,
+                    'all_offer_vol': all_offer_vol,
+                    'calculation': f'{all_bid_vol} * 2 = {all_bid_vol * 2} < {all_offer_vol}? {rule5_bullish_passed}'
+                }
+            }
         
-        # Component 5: Multi-day positive flow
-        if net_flow_3days and len(net_flow_3days) >= 2:
-            positive_days = sum(1 for flow in net_flow_3days if flow > 0)
-            if positive_days >= self.thresholds['min_multi_day']:
-                confidence_score += 5
-                details['multi_day_flow'] = f'POSITIVE ({positive_days}/{len(net_flow_3days)} days) ✓'
+        # RULE 6 BULLISH: All Bid Freq vs All Offer Freq (10 points)
+        # Bullish if: bid*2 < offer (strictly less than)
+        rule6_bullish_passed = False
+        if len(bid_freqs) > 0 and len(offer_freqs) > 0:
+            all_bid_freq = sum(bid_freqs)
+            all_offer_freq = sum(offer_freqs)
+            
+            if (all_bid_freq * 2) < all_offer_freq:
+                bullish_confidence += 10
+                rule6_bullish_passed = True
+            
+            bullish_rules['rule_6'] = {
+                'name': 'All Bid Freq vs All Offer Freq',
+                'passed': rule6_bullish_passed,
+                'points': 10 if rule6_bullish_passed else 0,
+                'condition': '(all_bid_freq * 2) < all_offer_freq',
+                'interpretation': 'Sellers >> buyers in frequency',
+                'values': {
+                    'all_bid_freq': all_bid_freq,
+                    'all_offer_freq': all_offer_freq,
+                    'calculation': f'{all_bid_freq} * 2 = {all_bid_freq * 2} < {all_offer_freq}? {rule6_bullish_passed}'
+                }
+            }
         
-        return {
-            'pattern': 'BULLISH_ACCUMULATION',
-            'confidence': min(confidence_score, 100),
-            'details': details,
-            'action': self._get_action_bullish(confidence_score),
-            'description': 'Buyers strong accumulation - breakup incoming'
-        }
-    
-    # ===== PATTERN 2: BEARISH DISTRIBUTION/RED FLAG =====
-    def detect_bearish_distribution(self, 
-                                   price_momentum: float,
-                                   bid_vols: List[float], 
-                                   bid_freqs: List[int],
-                                   offer_vols: List[float], 
-                                   offer_freqs: List[int],
-                                   haki_volume_recent: float,
-                                   haka_volume_recent: float = None,
-                                   net_flow_3days: List[float] = None) -> Dict:
-        """
-        PATTERN BEARISH DISTRIBUTION = IMMINENT GUYURAN!
+        # ===== BEARISH RULES (Strong SELLER dominating) - offer much bigger =====
+        # RULE 1 BEARISH: Top 10 Summed Offer Volume vs Bid Volume (15 points)
+        # Bearish if: bid < offer*2 (strictly less than)
+        rule1_bearish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            sum_bid_vol_top10 = sum(bid_volumes[:10])
+            sum_offer_vol_top10 = sum(offer_volumes[:10])
+            
+            if sum_bid_vol_top10 < (sum_offer_vol_top10 * 2):
+                bearish_confidence += 15
+                rule1_bearish_passed = True
+            
+            bearish_rules['rule_1'] = {
+                'name': 'Top 10 Summed Offer Volume vs Bid Volume',
+                'passed': rule1_bearish_passed,
+                'points': 15 if rule1_bearish_passed else 0,
+                'condition': '(sum_offer_vol_top10 * 2) < sum_bid_vol_top10',
+                'interpretation': 'Buyers massive (bids weak sellers)',
+                'values': {
+                    'sum_bid_vol_top10': sum_bid_vol_top10,
+                    'sum_offer_vol_top10': sum_offer_vol_top10,
+                    'calculation': f'{sum_offer_vol_top10} * 2 = {sum_offer_vol_top10 * 2} < {sum_bid_vol_top10}? {rule1_bearish_passed}'
+                }
+            }
         
-        NOTE: Trend/price momentum is NOT a requirement anymore!
-        Pattern can be detected at any price level based on PURE ORDER BOOK microstructure
+        # RULE 2 BEARISH: Top Offer Volume vs Top Bid Volume (20 points)
+        rule2_bearish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            top_bid_vol = bid_volumes[0]
+            top_offer_vol = offer_volumes[0]
+            
+            if (top_offer_vol * 1.8) < top_bid_vol:
+                bearish_confidence += 20
+                rule2_bearish_passed = True
+            
+            bearish_rules['rule_2'] = {
+                'name': 'Top Offer Volume vs Top Bid Volume',
+                'passed': rule2_bearish_passed,
+                'points': 20 if rule2_bearish_passed else 0,
+                'condition': '(top_offer_vol * 1.8) < top_bid_vol',
+                'interpretation': 'Top buyer massive vs top seller',
+                'values': {
+                    'top_bid_vol': top_bid_vol,
+                    'top_offer_vol': top_offer_vol,
+                    'calculation': f'{top_offer_vol} * 1.8 = {top_offer_vol * 1.8} < {top_bid_vol}? {rule2_bearish_passed}'
+                }
+            }
         
-        Key Signals (ADJUSTED LOGIC):
-        1. bid vol per tick < offer vol per tick (at least 3-4 out of top 5 levels)
-        2. bid vol sum * 1.75 < offer vol sum (top 10 summed)
-        3. bid freq per tick < offer freq per tick (at least 3-4 out of top 5 levels)
-        4. bid freq sum * 1.75 < offer freq sum (top 10 summed)
-        5. HAKI > HAKA (sellers more aggressive than buyers)
-        6. Negative net flow 3-day trend (sellers accumulating, distribution phase)
+        # RULE 3 BEARISH: Distribusi Bid Volume - Kerapian Tick (30 points)
+        rule3_bearish_passed = False
+        if len(bid_volumes) >= 10:
+            top_bid = bid_volumes[0]
+            threshold = top_bid * 0.8
+            
+            # Exclude bids > threshold
+            remaining_bids = [v for v in bid_volumes[:10] if v <= threshold]
+            
+            if len(remaining_bids) > 0:
+                average = sum(remaining_bids) / len(remaining_bids)
+                count_above_avg = sum(1 for v in remaining_bids if v > average)
+                percentage_above_avg = count_above_avg / len(remaining_bids)
+                
+                if percentage_above_avg >= 0.75:
+                    bearish_confidence += 30
+                    rule3_bearish_passed = True
+                
+                bearish_rules['rule_3'] = {
+                    'name': 'Distribusi Bid Volume - Kerapian Tick',
+                    'passed': rule3_bearish_passed,
+                    'points': 30 if rule3_bearish_passed else 0,
+                    'condition': '(count_above_avg / count(remaining_bids)) >= 0.75',
+                    'interpretation': 'Buyer demand consistent & strong',
+                    'values': {
+                        'top_bid': top_bid,
+                        'threshold_80_percent': threshold,
+                        'all_top_10_bids': bid_volumes[:10],
+                        'remaining_after_exclude': remaining_bids,
+                        'average': average,
+                        'count_above_avg': count_above_avg,
+                        'percentage_above_avg': percentage_above_avg,
+                        'calculation': f'{count_above_avg}/{len(remaining_bids)} = {percentage_above_avg:.2%} >= 75%? {rule3_bearish_passed}'
+                    }
+                }
+        elif len(bid_volumes) >= 5:
+            # Fallback for when we have less than 10 bids - use available data
+            top_bid = bid_volumes[0]
+            threshold = top_bid * 0.8
+            
+            # Exclude bids > threshold
+            remaining_bids = [v for v in bid_volumes if v <= threshold]
+            
+            if len(remaining_bids) > 0:
+                average = sum(remaining_bids) / len(remaining_bids)
+                count_above_avg = sum(1 for v in remaining_bids if v > average)
+                percentage_above_avg = count_above_avg / len(remaining_bids)
+                
+                if percentage_above_avg >= 0.75:
+                    bearish_confidence += 30
+                    rule3_bearish_passed = True
+                
+                bearish_rules['rule_3'] = {
+                    'name': 'Distribusi Bid Volume - Kerapian Tick',
+                    'passed': rule3_bearish_passed,
+                    'points': 30 if rule3_bearish_passed else 0,
+                    'condition': '(count_above_avg / count(remaining_bids)) >= 0.75',
+                    'interpretation': 'Buyer demand consistent & strong',
+                    'values': {
+                        'top_bid': top_bid,
+                        'threshold_80_percent': threshold,
+                        'all_top_10_bids': bid_volumes[:10] if len(bid_volumes) >= 10 else bid_volumes,
+                        'remaining_after_exclude': remaining_bids,
+                        'average': average,
+                        'count_above_avg': count_above_avg,
+                        'percentage_above_avg': percentage_above_avg,
+                        'calculation': f'{count_above_avg}/{len(remaining_bids)} = {percentage_above_avg:.2%} >= 75%? {rule3_bearish_passed}'
+                    }
+                }
         
-        Result: STRONG BEARISH SIGNAL (sellers dominating)
+        # RULE 4 BEARISH: Top 10 Summed Offer Freq vs Bid Freq (15 points)
+        # Bearish if: bid < offer*2 (strictly less than)
+        rule4_bearish_passed = False
+        if len(bid_freqs) > 0 and len(offer_freqs) > 0:
+            sum_bid_freq_top10 = sum(bid_freqs[:10])
+            sum_offer_freq_top10 = sum(offer_freqs[:10])
+            
+            if sum_bid_freq_top10 < (sum_offer_freq_top10 * 2):
+                bearish_confidence += 15
+                rule4_bearish_passed = True
+            
+            bearish_rules['rule_4'] = {
+                'name': 'Top 10 Summed Offer Freq vs Bid Freq',
+                'passed': rule4_bearish_passed,
+                'points': 15 if rule4_bearish_passed else 0,
+                'condition': '(sum_offer_freq_top10 * 2) < sum_bid_freq_top10',
+                'interpretation': 'Buyers hitting multiple times',
+                'values': {
+                    'sum_bid_freq_top10': sum_bid_freq_top10,
+                    'sum_offer_freq_top10': sum_offer_freq_top10,
+                    'calculation': f'{sum_offer_freq_top10} * 2 = {sum_offer_freq_top10 * 2} < {sum_bid_freq_top10}? {rule4_bearish_passed}'
+                }
+            }
         
-        Args:
-            price_momentum: Price momentum indicator (not used as requirement)
-            bid_vols: List of bid volumes (top 10 levels)
-            bid_freqs: List of bid frequencies (top 10 levels)
-            offer_vols: List of offer volumes (top 10 levels)
-            offer_freqs: List of offer frequencies (top 10 levels)
-            haki_volume_recent: Recent aggressive sell volume
-            haka_volume_recent: Recent aggressive buy volume
-            net_flow_3days: Net flow for past 3 days
+        # RULE 5 BEARISH: All Offer Volume vs All Bid Volume (10 points)
+        # Bearish if: bid < offer*2 (strictly less than)
+        rule5_bearish_passed = False
+        if len(bid_volumes) > 0 and len(offer_volumes) > 0:
+            all_bid_vol = sum(bid_volumes)
+            all_offer_vol = sum(offer_volumes)
+            
+            if all_bid_vol < (all_offer_vol * 2):
+                bearish_confidence += 10
+                rule5_bearish_passed = True
+            
+            bearish_rules['rule_5'] = {
+                'name': 'All Offer Volume vs All Bid Volume',
+                'passed': rule5_bearish_passed,
+                'points': 10 if rule5_bearish_passed else 0,
+                'condition': '(all_offer_vol * 2) < all_bid_vol',
+                'interpretation': 'Total buyers >> total sellers',
+                'values': {
+                    'all_bid_vol': all_bid_vol,
+                    'all_offer_vol': all_offer_vol,
+                    'calculation': f'{all_offer_vol} * 2 = {all_offer_vol * 2} < {all_bid_vol}? {rule5_bearish_passed}'
+                }
+            }
         
-        Returns:
-            Dict with pattern, confidence score, details, and action
-        """
+        # RULE 6 BEARISH: All Offer Freq vs All Bid Freq (10 points)
+        # Bearish if: bid < offer*2 (strictly less than)
+        rule6_bearish_passed = False
+        if len(bid_freqs) > 0 and len(offer_freqs) > 0:
+            all_bid_freq = sum(bid_freqs)
+            all_offer_freq = sum(offer_freqs)
+            
+            if all_bid_freq < (all_offer_freq * 2):
+                bearish_confidence += 10
+                rule6_bearish_passed = True
+            
+            bearish_rules['rule_6'] = {
+                'name': 'All Offer Freq vs All Bid Freq',
+                'passed': rule6_bearish_passed,
+                'points': 10 if rule6_bearish_passed else 0,
+                'condition': '(all_offer_freq * 2) < all_bid_freq',
+                'interpretation': 'Buyers >> sellers in frequency',
+                'values': {
+                    'all_bid_freq': all_bid_freq,
+                    'all_offer_freq': all_offer_freq,
+                    'calculation': f'{all_offer_freq} * 2 = {all_offer_freq * 2} < {all_bid_freq}? {rule6_bearish_passed}'
+                }
+            }
         
-        confidence_score = 0
-        details = {}
-        
-        # Calculate totals (using top 10 levels for summed checks)
-        offer_total = sum(offer_vols[:10]) if offer_vols else 0
-        bid_total = sum(bid_vols[:10]) if bid_vols else 0
-        offer_freq_total = sum(offer_freqs[:10]) if offer_freqs else 0
-        bid_freq_total = sum(bid_freqs[:10]) if bid_freqs else 0
-        
-        # Component 1: Check bid vol per tick > offer vol per tick (at least 3-4 out of top 5)
-        bid_vol_stronger_count = sum(
-            1 for i in range(min(5, len(bid_vols), len(offer_vols)))
-            if bid_vols[i] > offer_vols[i]
-        )
-        
-        if bid_vol_stronger_count >= 3:  # At least 3 out of 5
-            confidence_score += 20
-            details['bid_vol_per_tick'] = f'TOP 5: {bid_vol_stronger_count}/5 levels bid > offer ✓'
-        
-        # Component 2: Check bid vol sum * 1.75 > offer vol sum (TOP 10 SUMMED)
-        if bid_total > 0 and offer_total > 0:
-            if bid_total * 1.75 > offer_total:
-                confidence_score += 25
-                details['bid_vol_strength'] = f'bid*1.75 > offer (ratio: {bid_total/offer_total:.2f}x) ✓'
-        
-        # Component 3: Check bid freq per tick > offer freq per tick (at least 3-4 out of top 5)
-        bid_freq_stronger_count = sum(
-            1 for i in range(min(5, len(bid_freqs), len(offer_freqs)))
-            if bid_freqs[i] > offer_freqs[i]
-        )
-        
-        if bid_freq_stronger_count >= 3:  # At least 3 out of 5
-            confidence_score += 20
-            details['bid_freq_per_tick'] = f'TOP 5: {bid_freq_stronger_count}/5 levels bid_freq > offer_freq ✓'
-        
-        # Component 4: Check bid freq sum * 1.75 > offer freq sum (TOP 10 SUMMED)
-        if bid_freq_total > 0 and offer_freq_total > 0:
-            if bid_freq_total * 1.75 > offer_freq_total:
-                confidence_score += 25
-                details['bid_freq_strength'] = f'bid_freq*1.75 > offer_freq (ratio: {bid_freq_total/offer_freq_total:.2f}x) ✓'
-        
-        # Component 5: HAKA > HAKI (buyers more aggressive than sellers in bearish - dump incoming)
-        if haka_volume_recent and haki_volume_recent:
-            if haka_volume_recent > haki_volume_recent:
-                haka_ratio = haka_volume_recent / haki_volume_recent if haki_volume_recent > 0 else 0
-                confidence_score += 15
-                details['haka_dominance'] = f'HAKA > HAKI ({haka_ratio:.2f}x) ✓'
-        elif haka_volume_recent and haka_volume_recent > self.thresholds['large_volume']:
-            confidence_score += 10
-            details['haka_activity'] = f'HIGH ({haka_volume_recent:,.0f}) ✓'
-        
-        # Component 6: Negative net flow (3-day trend shows selling pressure)
-        if net_flow_3days and len(net_flow_3days) >= 2:
-            negative_days = sum(1 for flow in net_flow_3days if flow < 0)
-            if negative_days >= 2:  # At least 2 days negative
-                confidence_score += 15
-                details['net_flow'] = f'NEGATIVE ({negative_days}/{len(net_flow_3days)} days) ✓'
-        
-        return {
-            'pattern': 'BEARISH_DISTRIBUTION',
-            'confidence': min(confidence_score, 100),
-            'details': details,
-            'action': self._get_action_bearish(confidence_score),
-            'description': 'Sellers dominating - strong bearish pressure detected'
-        }
-    
-    # ===== UTILITY: Frequency analysis =====
-    def analyze_frequency_dynamics(self, 
-                                  bid_freqs: List[int], 
-                                  offer_freqs: List[int]) -> Dict:
-        """
-        Track frequency shift over time
-        
-        Useful for detecting:
-        - Bid persistence (accumulation phase)
-        - Freq shift indicator (distribution phase)
-        """
-        
-        bid_freq_recent = sum(bid_freqs[-3:]) if len(bid_freqs) >= 3 else sum(bid_freqs)
-        offer_freq_recent = sum(offer_freqs[-3:]) if len(offer_freqs) >= 3 else sum(offer_freqs)
-        
-        # Trend comparison (last 3 vs before last 3)
-        if len(bid_freqs) >= 6:
-            bid_freq_trend = bid_freq_recent - sum(bid_freqs[-6:-3])
-            offer_freq_trend = offer_freq_recent - sum(offer_freqs[-6:-3])
+        # Determine sentiment - 3 categories: NEUTRAL, BULLISH, BEARISH
+        if bullish_confidence >= self.thresholds['bullish_threshold']:
+            sentiment = 'BULLISH'
+            confidence = bullish_confidence
+            signal_rules = bullish_rules
+        elif bearish_confidence >= self.thresholds['bearish_threshold']:
+            sentiment = 'BEARISH'
+            confidence = bearish_confidence
+            signal_rules = bearish_rules
         else:
-            bid_freq_trend = 0
-            offer_freq_trend = 0
+            sentiment = 'NEUTRAL'
+            confidence = max(bullish_confidence, bearish_confidence)
+            signal_rules = bullish_rules if bullish_confidence >= bearish_confidence else bearish_rules
+        
+        # Signal emoji mapping
+        signal_map = {
+            'BULLISH': '🚀',
+            'BEARISH': '⬇️',
+            'NEUTRAL': '⚪'
+        }
+        
+        return {
+            'confidence': confidence,
+            'bullish_confidence': bullish_confidence,
+            'bearish_confidence': bearish_confidence,
+            'sentiment': sentiment,
+            'threshold': self.thresholds['bullish_threshold'],
+            'rules': signal_rules,
+            'all_rules': {
+                'bullish': bullish_rules,
+                'bearish': bearish_rules
+            },
+            'summary': {
+                'total_points': confidence,
+                'max_points': 100,
+                'signal': f"{signal_map[sentiment]} {sentiment} (Confidence: {confidence}/100)"
+            }
+        }
+    
+    # ===== HELPER METHODS =====
+    def _get_action_bullish(self, confidence: float) -> str:
+        """Determine action for bullish pattern"""
+        if confidence >= 85:
+            return 'BUY_STRONG'
+        elif confidence >= 75:
+            return 'BUY'
+        elif confidence >= 60:
+            return 'WATCH'
+        else:
+            return 'SKIP'
+    
+    def _get_action_bearish(self, confidence: float) -> str:
+        """Determine action for bearish pattern"""
+        if confidence >= 90:
+            return 'IMMEDIATE_EXIT'
+        elif confidence >= 80:
+            return 'CLOSE_POSITION'
+        elif confidence >= 60:
+            return 'CAUTION'
+        else:
+            return 'MONITOR'
+    
+    # ===== FREQUENCY DYNAMICS ANALYSIS =====
+    def analyze_frequency_dynamics(self,
+                                   bid_freqs: List[int],
+                                   offer_freqs: List[int]) -> Dict:
+        """
+        Analyze frequency dynamics to identify market phases
+        
+        Returns:
+            Dict with frequency trends and dynamics analysis
+        """
+        
+        if not bid_freqs or not offer_freqs:
+            return {
+                'bid_freq_recent': 0,
+                'offer_freq_recent': 0,
+                'bid_freq_trend': 'STABLE',
+                'offer_freq_trend': 'STABLE',
+                'phase': 'UNKNOWN'
+            }
+        
+        # Get recent frequencies (first 3 levels)
+        bid_freq_recent = sum(bid_freqs[:3]) if len(bid_freqs) >= 3 else sum(bid_freqs)
+        offer_freq_recent = sum(offer_freqs[:3]) if len(offer_freqs) >= 3 else sum(offer_freqs)
+        
+        # Determine trends (based on available data)
+        bid_freq_trend = 'STABLE'
+        if len(bid_freqs) >= 2:
+            if bid_freqs[0] > bid_freqs[-1]:
+                bid_freq_trend = 'DECREASING'
+            elif bid_freqs[0] < bid_freqs[-1]:
+                bid_freq_trend = 'INCREASING'
+        
+        offer_freq_trend = 'STABLE'
+        if len(offer_freqs) >= 2:
+            if offer_freqs[0] > offer_freqs[-1]:
+                offer_freq_trend = 'DECREASING'
+            elif offer_freqs[0] < offer_freqs[-1]:
+                offer_freq_trend = 'INCREASING'
+        
+        # Identify phase
+        phase = 'CONSOLIDATION'
+        if bid_freq_trend == 'INCREASING' and offer_freq_trend in ['STABLE', 'DECREASING']:
+            phase = 'ACCUMULATION'
+        elif offer_freq_trend == 'INCREASING' and bid_freq_trend in ['STABLE', 'DECREASING']:
+            phase = 'DISTRIBUTION'
         
         return {
             'bid_freq_recent': bid_freq_recent,
             'offer_freq_recent': offer_freq_recent,
-            'bid_freq_trend': 'INCREASING' if bid_freq_trend > 0 else 'DECREASING' if bid_freq_trend < 0 else 'STABLE',
-            'offer_freq_trend': 'INCREASING' if offer_freq_trend > 0 else 'DECREASING' if offer_freq_trend < 0 else 'STABLE'
+            'bid_freq_trend': bid_freq_trend,
+            'offer_freq_trend': offer_freq_trend,
+            'phase': phase,
+            'bid_freqs': bid_freqs,
+            'offer_freqs': offer_freqs
         }
     
     # ===== ENTRY LOGIC: STAGED BUYING =====
@@ -405,113 +717,85 @@ class IDXMomentumIndicator:
             'trailing_stop': trailing_stop,
             'active_trailing_stop': max(stop_loss, trailing_stop)
         }
-    
-    # ===== HELPER METHODS =====
-    def _get_action_bullish(self, confidence: float) -> str:
-        """Determine action for bullish pattern"""
-        if confidence >= 85:
-            return 'BUY_STRONG'
-        elif confidence >= 75:
-            return 'BUY'
-        elif confidence >= 60:
-            return 'WATCH'
-        else:
-            return 'SKIP'
-    
-    def _get_action_bearish(self, confidence: float) -> str:
-        """Determine action for bearish pattern"""
-        if confidence >= 90:
-            return 'IMMEDIATE_EXIT'
-        elif confidence >= 80:
-            return 'CLOSE_POSITION'
-        elif confidence >= 60:
-            return 'CAUTION'
-        else:
-            return 'MONITOR'
 
 
 # ===== EXAMPLE USAGE =====
 if __name__ == "__main__":
     """
-    Example: Analyzing HMSP screenshot data
+    Example: Testing the 6-Rule Trading Sentiment Analysis
     """
     
-    indicator = IDXMomentumIndicator()
+    indicator = IDXMomentumIndicator(thresholds={'bullish_threshold': 80})
     
-    # HMSP Order Book Data (from screenshot)
-    bid_vols_hmsp = [515, 12836, 24618, 50627, 16426]
-    bid_freqs_hmsp = [0, 63, 110, 138, 133]
-    ask_vols_hmsp = [47079, 29127, 73236, 82845, 88305]
-    ask_freqs_hmsp = [0, 202, 204, 377, 704]
-    
-    # Broker Action (from broker summary)
-    net_flow_3days = [1.5, 1.2, 0.9]  # Positive money flows (in billions)
-    haka_volume = 75000  # Large volume
-    
-    # Analyze bullish pattern
+    # Example 1: PASS scenario (all rules pass)
     print("=" * 80)
-    print("HMSP - BULLISH ACCUMULATION ANALYSIS")
+    print("EXAMPLE 1: ALL RULES PASS (Expected: BULLISH)")
     print("=" * 80)
     
-    result_bullish = indicator.detect_bullish_accumulation(
-        bid_vols=bid_vols_hmsp,
-        bid_freqs=bid_freqs_hmsp,
-        offer_vols=ask_vols_hmsp,
-        offer_freqs=ask_freqs_hmsp,
-        haka_volume_recent=haka_volume,
-        net_flow_3days=net_flow_3days
+    # Example 1: PASS scenario (optimized for all rules passing)
+    # Rule 3 requires: 75% of remaining offers > average
+    # Strategy: Create tight distribution around middle values
+    bid_vols_pass = [100, 95, 90, 85, 80, 75, 70, 65, 60, 55]
+    bid_freqs_pass = [20, 19, 18, 17, 16, 15, 14, 13, 12, 11]
+    
+    # Offer volumes: [top=10000] -> exclude >8000 -> [2800, 2700, 2600, 2500, 2400, 2300, 1000, 900]
+    # Average = 2275, then 6/8 = 75% > average PASS!
+    offer_vols_pass = [10000, 8200, 2800, 2700, 2600, 2500, 2400, 2300, 1000, 900]
+    offer_freqs_pass = [100, 95, 90, 85, 80, 75, 70, 65, 60, 55]
+    
+    bid_prices_pass = [1000, 999, 998, 997, 996, 995, 994, 993, 992, 991]
+    offer_prices_pass = [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010]
+    
+    result_pass = indicator.analyze_sentiment(
+        bid_prices=bid_prices_pass,
+        bid_volumes=bid_vols_pass,
+        bid_freqs=bid_freqs_pass,
+        offer_prices=offer_prices_pass,
+        offer_volumes=offer_vols_pass,
+        offer_freqs=offer_freqs_pass
     )
     
-    print(f"\nPattern: {result_bullish['pattern']}")
-    print(f"Confidence: {result_bullish['confidence']}/100")
-    print(f"Action: {result_bullish['action']}")
-    print(f"\nDetails:")
-    for key, value in result_bullish['details'].items():
-        print(f"  {key}: {value}")
+    print(f"\nResult: {result_pass['summary']['signal']}")
+    print(f"Confidence: {result_pass['confidence']}/100")
+    print(f"Sentiment: {result_pass['sentiment']}\n")
     
-    # Generate staged entries
+    for rule_key, rule_data in result_pass['rules'].items():
+        status = "✓ PASS" if rule_data['passed'] else "✗ FAIL"
+        print(f"{rule_key} - {rule_data['name']}: {status} ({rule_data['points']} points)")
+        print(f"   Calculation: {rule_data['values']['calculation']}")
+    
+    # Example 2: FAIL scenario (all rules fail)
     print("\n" + "=" * 80)
-    print("STAGED ENTRY STRATEGY")
+    print("EXAMPLE 2: ALL RULES FAIL (Expected: BEARISH)")
     print("=" * 80)
     
-    bid_prices_hmsp = [875, 870, 865, 860, 855]
-    entries = indicator.generate_staged_entries(
-        confidence=result_bullish['confidence'],
-        bid_vols=bid_vols_hmsp,
-        bid_prices=bid_prices_hmsp,
-        position_size=100
+    # Example 2: TRUE BEARISH scenario (strong selling pressure)
+    # This scenario has STRONG bid compared to weak offer
+    # In this 6-rule system: high bid volume = BEARISH signal
+    bid_vols_fail = [300, 280, 260, 240, 220, 200, 180, 160, 140, 120]
+    bid_freqs_fail = [40, 38, 36, 34, 32, 30, 28, 26, 24, 22]
+    
+    # Offer volumes: weak and scattered (not meeting Rule 3)
+    offer_vols_fail = [100, 95, 90, 85, 80, 75, 70, 65, 60, 55]
+    offer_freqs_fail = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
+    
+    bid_prices_fail = [1000, 999, 998, 997, 996, 995, 994, 993, 992, 991]
+    offer_prices_fail = [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010]
+    
+    result_fail = indicator.analyze_sentiment(
+        bid_prices=bid_prices_fail,
+        bid_volumes=bid_vols_fail,
+        bid_freqs=bid_freqs_fail,
+        offer_prices=offer_prices_fail,
+        offer_volumes=offer_vols_fail,
+        offer_freqs=offer_freqs_fail
     )
     
-    for entry in entries:
-        print(f"\nStage {entry['stage']}:")
-        print(f"  Size: {entry['size']:.1f}% of position")
-        print(f"  Price: Rp {entry['price']:.0f}")
-        print(f"  Available Volume: {entry['volume_available']:,.0f} lots")
-        print(f"  → {entry['description']}")
+    print(f"\nResult: {result_fail['summary']['signal']}")
+    print(f"Confidence: {result_fail['confidence']}/100")
+    print(f"Sentiment: {result_fail['sentiment']}\n")
     
-    # Example exit strategy
-    print("\n" + "=" * 80)
-    print("EXIT STRATEGY")
-    print("=" * 80)
-    
-    entry_price = 872
-    current_price = 880
-    atr = 8  # Average True Range
-    
-    exit_strategy = indicator.generate_exit_strategy(
-        entry_price=entry_price,
-        current_price=current_price,
-        atr=atr,
-        position_size=100
-    )
-    
-    print(f"\nEntry Price: Rp {exit_strategy['entry_price']:.0f}")
-    print(f"Current Price: Rp {exit_strategy['current_price']:.0f}")
-    print(f"Current Profit: {exit_strategy['current_profit_pct']:.2f}%")
-    print(f"Stop Loss: Rp {exit_strategy['stop_loss']:.0f}")
-    print(f"Trailing Stop: Rp {exit_strategy['trailing_stop']:.0f}")
-    
-    print(f"\nProfit Targets:")
-    for target in exit_strategy['targets']:
-        print(f"  {target['target_pct']:.1f}% → Rp {target['target_level']:.0f} | Take {target['take_profit']:.0f}%")
-        print(f"      {target['description']}")
+    for rule_key, rule_data in result_fail['rules'].items():
+        status = "✓ PASS" if rule_data['passed'] else "✗ FAIL"
+        print(f"{rule_key} - {rule_data['name']}: {status} ({rule_data['points']} points)")
+        print(f"   Calculation: {rule_data['values']['calculation']}")
